@@ -97,6 +97,12 @@ class MobileScannerHandler(
         barcodeHandler.publishEvent(mapOf("name" to "zoomScaleState", "data" to zoomScale))
     }
 
+    private val sceneLuminanceCallback: SceneLuminanceCallback = {mean: Double, p90: Double ->
+        barcodeHandler.publishEvent(
+            mapOf("name" to "sceneLuminance", "data" to mapOf("mean" to mean, "p90" to p90))
+        )
+    }
+
     init {
         methodChannel = MethodChannel(binaryMessenger,
             "dev.steenbakker.mobile_scanner/scanner/method")
@@ -153,6 +159,7 @@ class MobileScannerHandler(
             "pause" -> pause(call, result)
             "stop" -> stop(call, result)
             "toggleTorch" -> toggleTorch(result)
+            "setTorchMode" -> setTorchMode(call, result)
             "getSupportedLenses" -> getSupportedLenses(call, result)
             "getBestCloseRangeScanningLens" -> getBestCloseRangeScanningLens(result)
             "analyzeImage" -> analyzeImage(call, result)
@@ -183,6 +190,7 @@ class MobileScannerHandler(
         }
         val invertImage: Boolean = call.argument<Boolean>("invertImage") ?: false
         val initialZoom: Double? = call.argument<Double?>("initialZoom")
+        val reportSceneLuminance: Boolean = call.argument<Boolean>("reportSceneLuminance") ?: false
 
         val barcodeScannerOptions: BarcodeScannerOptions? = buildBarcodeScannerOptions(formats, autoZoom)
 
@@ -253,7 +261,9 @@ class MobileScannerHandler(
             timeout.toLong(),
             cameraResolution,
             invertImage,
-            initialZoom
+            initialZoom,
+            reportSceneLuminance,
+            sceneLuminanceCallback
         )
     }
 
@@ -295,6 +305,25 @@ class MobileScannerHandler(
 
     private fun toggleTorch(result: MethodChannel.Result) {
         mobileScanner?.toggleTorch()
+        result.success(null)
+    }
+
+    private fun setTorchMode(call: MethodCall, result: MethodChannel.Result) {
+        // Off = 0, On = 1. CameraX has no automatic torch mode, so anything
+        // else is rejected instead of being silently ignored.
+        when (call.arguments as? Int) {
+            0 -> mobileScanner?.setTorchMode(false)
+            1 -> mobileScanner?.setTorchMode(true)
+            else -> {
+                result.error(
+                    MobileScannerErrorCodes.SET_TORCH_MODE_ERROR,
+                    MobileScannerErrorCodes.SET_TORCH_MODE_ERROR_MESSAGE,
+                    null
+                )
+                return
+            }
+        }
+
         result.success(null)
     }
 

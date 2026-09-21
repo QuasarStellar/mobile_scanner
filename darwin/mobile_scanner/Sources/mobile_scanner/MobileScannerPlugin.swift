@@ -52,6 +52,18 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
     
     var standardZoomFactor: CGFloat = 1
 
+    /// Whether the brightness of the camera scene should be measured.
+    var reportSceneLuminance: Bool = false
+
+    /// The next moment at which the scene brightness may be measured.
+    private var nextSceneLuminanceTime: Double = 0
+
+    /// Minimum pause between two scene brightness measurements, in seconds.
+    private let sceneLuminanceInterval: Double = 0.4
+
+    /// Target number of sampled pixels per scene brightness measurement.
+    private let sceneLuminanceSamples: Int = 4096
+
 #if os(iOS)
     var interfaceOrientationObserver: NSObjectProtocol?
 #endif
@@ -149,6 +161,8 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
             start(call, result)
         case "toggleTorch":
             toggleTorch(result)
+        case "setTorchMode":
+            setTorchMode(call, result)
         case "getSupportedLenses":
             getSupportedLenses(call, result)
         case "getBestCloseRangeScanningLens":
@@ -247,6 +261,11 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
         }
         latestBuffer = imageBuffer
         notifyFrameAvailable(for: textureId)
+
+        // Measured before the detection check below: that check skips frames at
+        // the detection rate, which would otherwise throttle the brightness
+        // measurement to a rate that is not its own.
+        measureSceneLuminance(imageBuffer)
 
         let currentTime = Date().timeIntervalSince1970
         let eligibleForScan = currentTime > nextScanTime && !imagesCurrentlyBeingProcessed
@@ -467,6 +486,8 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
         }()
         symbologies = argReader.toSymbology()
         MobileScannerPlugin.returnImage = argReader.bool(key: "returnImage") ?? false
+        reportSceneLuminance = argReader.bool(key: "reportSceneLuminance") ?? false
+        nextSceneLuminanceTime = 0
 
         timeoutSeconds = Double(timeoutMs) / 1000.0
         detectionSpeed = DetectionSpeed(rawValue: speed)!
@@ -918,6 +939,159 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
         }
 
         result(nil)
+    }
+
+    /// Sets the torch to an absolute state, unlike `toggleTorch`.
+    func setTorchMode(_ call: FlutterMethodCall, _ result: FlutterResult) {
+        // Off = 0, On = 1. Auto is rejected, because in `.auto` the torch only
+        // illuminates once a movie file recording starts, and this session has
+        // no recording output.
+        let newTorchMode: AVCaptureDevice.TorchMode
+        switch (call.arguments as? Int) {
+        case 0:
+            newTorchMode = AVCaptureDevice.TorchMode.off
+        case 1:
+            newTorchMode = AVCaptureDevice.TorchMode.on
+        default:
+            result(FlutterError(code: MobileScannerErrorCodes.SET_TORCH_MODE_ERROR,
+                                message: MobileScannerErrorCodes.SET_TORCH_MODE_ERROR_MESSAGE,
+                                details: nil))
+            return
+        }
+
+        if (device == nil || !device.hasTorch) {
+            result(nil)
+            return
+        }
+
+        if #available(macOS 15.0, *) {
+            if (!device.isTorchAvailable) {
+                result(nil)
+                return
+            }
+        }
+
+        // Load bearing: `-setTorchMode:` raises an NSInvalidArgumentException
+        // for an unsupported mode, and that cannot be caught from Swift.
+        if (!device.isTorchModeSupported(newTorchMode) || device.torchMode == newTorchMode) {
+            result(nil)
+            return
+        }
+
+        do {
+            try device.lockForConfiguration()
+            device.torchMode = newTorchMode
+            device.unlockForConfiguration()
+        } catch(_) {
+            // Do nothing.
+        }
+
+        result(nil)
+    }
+
+    /// Measures the brightness of the current frame and reports it.
+    ///
+    /// The measurement is throttled to `sceneLuminanceInterval` and reads only
+    /// about `sceneLuminanceSamples` pixels of the buffer that the delegate
+    /// already receives, so it adds no image conversion and no camera stream of
+    /// its own. This runs on the main thread, which is where the sample buffer
+    /// delegate is called, so the subsampling and the throttle are required,
+    /// not merely an optimization.
+    private func measureSceneLuminance(_ imageBuffer: CVImageBuffer) {
+        if (!reportSceneLuminance) {
+            return
+        }
+
+        let now = Date().timeIntervalSince1970
+        if (now < nextSceneLuminanceTime) {
+            return
+        }
+        nextSceneLuminanceTime = now + sceneLuminanceInterval
+
+        CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly) }
+
+        let format = CVPixelBufferGetPixelFormatType(imageBuffer)
+        let isBiPlanar = format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            || format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+
+        // Plane 0 of the bi-planar formats is luma, so brightness needs no
+        // conversion there. The 32BGRA fallback is converted per sample.
+        let baseAddress = isBiPlanar
+            ? CVPixelBufferGetBaseAddressOfPlane(imageBuffer, 0)
+            : CVPixelBufferGetBaseAddress(imageBuffer)
+        let bytesPerRow = isBiPlanar
+            ? CVPixelBufferGetBytesPerRowOfPlane(imageBuffer, 0)
+            : CVPixelBufferGetBytesPerRow(imageBuffer)
+        let width = isBiPlanar
+            ? CVPixelBufferGetWidthOfPlane(imageBuffer, 0)
+            : CVPixelBufferGetWidth(imageBuffer)
+        let height = isBiPlanar
+            ? CVPixelBufferGetHeightOfPlane(imageBuffer, 0)
+            : CVPixelBufferGetHeight(imageBuffer)
+
+        guard let address = baseAddress, width > 0, height > 0 else {
+            return
+        }
+
+        let buffer = address.assumingMemoryBound(to: UInt8.self)
+        let bytesPerPixel = isBiPlanar ? 1 : 4
+
+        // Step over the frame so that roughly `sceneLuminanceSamples` pixels are
+        // read, no matter what resolution the camera picked.
+        let step = max(1, Int((Double(width) * Double(height) / Double(sceneLuminanceSamples)).squareRoot()))
+
+        var histogram = [Int](repeating: 0, count: 256)
+        var total = 0
+        var count = 0
+
+        var y = 0
+        while y < height {
+            let rowOffset = y * bytesPerRow
+            var x = 0
+            while x < width {
+                let index = rowOffset + x * bytesPerPixel
+                let luma: Int
+                if (isBiPlanar) {
+                    luma = Int(buffer[index])
+                } else {
+                    let b = Int(buffer[index])
+                    let g = Int(buffer[index + 1])
+                    let r = Int(buffer[index + 2])
+                    luma = (r * 299 + g * 587 + b * 114) / 1000
+                }
+
+                histogram[luma] += 1
+                total += luma
+                count += 1
+                x += step
+            }
+            y += step
+        }
+
+        if (count == 0) {
+            return
+        }
+
+        let mean = Double(total) / Double(count) / 255.0
+        let p90 = Double(percentile(histogram, count, 0.9)) / 255.0
+
+        sink?(["name": "sceneLuminance", "data": ["mean": mean, "p90": p90]])
+    }
+
+    /// Returns the `fraction` percentile of the given brightness `histogram`.
+    private func percentile(_ histogram: [Int], _ count: Int, _ fraction: Double) -> Int {
+        let target = Int((Double(count) * fraction).rounded(.up))
+        var seen = 0
+
+        for luma in 0..<histogram.count {
+            seen += histogram[luma]
+            if (seen >= target) {
+                return luma
+            }
+        }
+
+        return histogram.count - 1
     }
 
     func pause(_ call: FlutterMethodCall, _ result: FlutterResult) {

@@ -7,6 +7,7 @@ import 'package:mobile_scanner/src/enums/web_barcode_reader.dart';
 import 'package:mobile_scanner/src/method_channel/mobile_scanner_method_channel.dart';
 import 'package:mobile_scanner/src/mobile_scanner_view_attributes.dart';
 import 'package:mobile_scanner/src/objects/barcode_capture.dart';
+import 'package:mobile_scanner/src/objects/scene_luminance.dart';
 import 'package:mobile_scanner/src/objects/start_options.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
@@ -45,6 +46,14 @@ abstract class MobileScannerPlatform extends PlatformInterface {
   /// Get the stream of zoom scale changes.
   Stream<double> get zoomScaleStateStream {
     throw UnimplementedError('zoomScaleStateStream has not been implemented.');
+  }
+
+  /// Get the stream of scene brightness measurements.
+  ///
+  /// This stream only emits when the scanner was started with
+  /// [StartOptions.reportSceneLuminance] set to true.
+  Stream<SceneLuminance> get sceneLuminanceStream {
+    throw UnimplementedError('sceneLuminanceStream has not been implemented.');
   }
 
   /// Analyze a local image file for barcodes.
@@ -128,6 +137,16 @@ abstract class MobileScannerPlatform extends PlatformInterface {
   /// Toggle the torch on the active camera on or off.
   Future<void> toggleTorch() {
     throw UnimplementedError('toggleTorch() has not been implemented.');
+  }
+
+  /// Set the torch on the active camera to the given [torchState].
+  ///
+  /// Unlike [toggleTorch], this sets an absolute state, so that repeated calls
+  /// are idempotent and cannot race each other.
+  ///
+  /// Only [TorchState.on] and [TorchState.off] are supported.
+  Future<void> setTorchMode(TorchState torchState) {
+    throw UnimplementedError('setTorchMode() has not been implemented.');
   }
 
   /// Get the set of supported camera lens types for the current device.

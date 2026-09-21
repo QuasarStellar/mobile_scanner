@@ -28,6 +28,8 @@ struct MobileScannerErrorCodes {
     static let INVALID_FOCUS_POINT_MESSAGE = "The focus coordinates are not valid."
     static let NO_CAMERA_ERROR = "MOBILE_SCANNER_NO_CAMERA_ERROR"
     static let NO_CAMERA_ERROR_MESSAGE = "No cameras available."
+    static let SET_TORCH_MODE_ERROR = "MOBILE_SCANNER_SET_TORCH_MODE_ERROR"
+    static let SET_TORCH_MODE_ERROR_MESSAGE = "Only the on and off torch modes can be set."
     static let SET_SCALE_WHEN_STOPPED_ERROR = "MOBILE_SCANNER_SET_SCALE_WHEN_STOPPED_ERROR"
     static let SET_SCALE_WHEN_STOPPED_ERROR_MESSAGE = "The zoom scale cannot be changed when the camera is stopped."
     static let UNSUPPORTED_OPERATION_ERROR = "MOBILE_SCANNER_UNSUPPORTED_OPERATION"

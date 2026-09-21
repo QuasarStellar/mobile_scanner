@@ -19,6 +19,7 @@ import 'package:mobile_scanner/src/mobile_scanner_exception.dart';
 import 'package:mobile_scanner/src/mobile_scanner_platform_interface.dart';
 import 'package:mobile_scanner/src/objects/barcode_capture.dart';
 import 'package:mobile_scanner/src/objects/mobile_scanner_state.dart';
+import 'package:mobile_scanner/src/objects/scene_luminance.dart';
 import 'package:mobile_scanner/src/objects/start_options.dart';
 import 'package:mobile_scanner/src/objects/switch_camera_option.dart';
 
@@ -38,6 +39,7 @@ class MobileScannerController extends ValueNotifier<MobileScannerState> {
     this.invertImage = false,
     this.autoZoom = false,
     this.initialZoom,
+    this.reportSceneLuminance = false,
   }) : detectionTimeoutMs =
            detectionSpeed == DetectionSpeed.normal ? detectionTimeoutMs : 0,
        assert(
@@ -133,6 +135,22 @@ class MobileScannerController extends ValueNotifier<MobileScannerState> {
   /// Defaults to no initial zoom and is only supported on iOS, MacOS and
   /// Android.
   final double? initialZoom;
+
+  /// Whether the brightness of the camera scene should be measured and
+  /// reported through [sceneLuminance].
+  ///
+  /// The measurement is sampled and throttled on the platform side, using the
+  /// frames that the scanner already receives, so it does not add a camera
+  /// stream of its own.
+  ///
+  /// Defaults to false, and is only supported on iOS, MacOS and Android.
+  final bool reportSceneLuminance;
+
+  /// Get the stream of scene brightness measurements.
+  ///
+  /// This stream only emits when [reportSceneLuminance] is true.
+  Stream<SceneLuminance> get sceneLuminance =>
+      MobileScannerPlatform.instance.sceneLuminanceStream;
 
   /// The internal barcode controller, that listens for detected barcodes.
   final StreamController<BarcodeCapture> _barcodesController =
@@ -480,6 +498,7 @@ class MobileScannerController extends ValueNotifier<MobileScannerState> {
       invertImage: invertImage,
       autoZoom: autoZoom,
       initialZoom: initialZoom,
+      reportSceneLuminance: reportSceneLuminance,
     );
 
     try {
@@ -724,6 +743,36 @@ class MobileScannerController extends ValueNotifier<MobileScannerState> {
     // When the platform has updated the torch state,
     // it will send an update through the torch state event stream.
     await MobileScannerPlatform.instance.toggleTorch();
+  }
+
+  /// Set the torch to the given [torchState].
+  ///
+  /// Unlike [toggleTorch], this sets an absolute state. Repeated calls are
+  /// idempotent, and two calls in quick succession cannot leave the torch in
+  /// the opposite state, which is a hazard of toggling against a state that is
+  /// only reported back asynchronously.
+  ///
+  /// Only [TorchState.on] and [TorchState.off] are accepted.
+  ///
+  /// Does nothing if the device has no torch, or if the camera is not running.
+  Future<void> setTorchMode(TorchState torchState) async {
+    _throwIfNotInitialized();
+
+    if (torchState case TorchState.auto || TorchState.unavailable) {
+      throw ArgumentError.value(
+        torchState,
+        'torchState',
+        'Only TorchState.on and TorchState.off can be set.',
+      );
+    }
+
+    if (!value.isRunning || value.torchState == TorchState.unavailable) {
+      return;
+    }
+
+    // When the platform has updated the torch state,
+    // it will send an update through the torch state event stream.
+    await MobileScannerPlatform.instance.setTorchMode(torchState);
   }
 
   /// Update the scan window with the given [window] rectangle.

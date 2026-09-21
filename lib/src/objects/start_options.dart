@@ -20,6 +20,7 @@ class StartOptions {
     required this.invertImage,
     required this.autoZoom,
     required this.initialZoom,
+    this.reportSceneLuminance = false,
   });
 
   /// The direction for the camera.
@@ -68,6 +69,14 @@ class StartOptions {
   /// Currently only supported on iOS, MacOS and Android.
   final double? initialZoom;
 
+  /// Whether the scanner should report the brightness of the camera scene.
+  ///
+  /// When this is false, no brightness is computed and no measurements are
+  /// emitted.
+  ///
+  /// Currently only supported on iOS, MacOS and Android.
+  final bool reportSceneLuminance;
+
   /// Converts this object to a map.
   Map<String, Object?> toMap() {
     return <String, Object?>{
@@ -87,6 +96,7 @@ class StartOptions {
       'invertImage': invertImage,
       'autoZoom': autoZoom,
       'initialZoom': initialZoom,
+      'reportSceneLuminance': reportSceneLuminance,
     };
   }
 }

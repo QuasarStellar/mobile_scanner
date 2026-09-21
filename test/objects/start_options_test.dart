@@ -35,6 +35,7 @@ void main() {
         'invertImage': false,
         'autoZoom': false,
         'initialZoom': null,
+        'reportSceneLuminance': false,
       });
     });
 

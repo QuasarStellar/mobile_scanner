@@ -7,6 +7,7 @@ import android.media.Image
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import android.view.Surface
@@ -51,7 +52,10 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.ceil
+import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 class MobileScanner(
     private val activity: Activity,
@@ -87,8 +91,17 @@ class MobileScanner(
     private var detectionTimeout: Long = 250
     private var returnImage = false
     private var isPaused = false
+    private var reportSceneLuminance = false
+    private var sceneLuminanceCallback: SceneLuminanceCallback? = null
+    private var lastSceneLuminanceAt = 0L
 
     companion object {
+        /** Minimum pause between two scene brightness measurements, milliseconds. */
+        private const val SCENE_LUMINANCE_INTERVAL_MS = 400L
+
+        /** Target number of sampled pixels per scene brightness measurement. */
+        private const val SCENE_LUMINANCE_SAMPLES = 4096
+
         // Configure the `ProcessCameraProvider` to only log errors.
         // This prevents the informational log spam from CameraX.
         private fun configureCameraProcessProvider() {
@@ -121,6 +134,11 @@ class MobileScanner(
             imageProxy.close()
             return@Analyzer
         }
+
+        // Measured before the detection timeout below: that check skips frames
+        // at the detection rate, which would otherwise throttle the brightness
+        // measurement to a rate that is not its own.
+        measureSceneLuminance(imageProxy)
 
         if (detectionSpeed == DetectionSpeed.NORMAL && scannerTimeout) {
             imageProxy.close()
@@ -408,11 +426,16 @@ class MobileScanner(
         cameraResolutionWanted: Size?,
         invertImage: Boolean,
         initialZoom: Double?,
+        reportSceneLuminance: Boolean = false,
+        sceneLuminanceCallback: SceneLuminanceCallback? = null,
     ) {
         this.detectionSpeed = detectionSpeed
         this.detectionTimeout = detectionTimeout
         this.returnImage = returnImage
         this.invertImage = invertImage
+        this.reportSceneLuminance = reportSceneLuminance
+        this.sceneLuminanceCallback = sceneLuminanceCallback
+        this.lastSceneLuminanceAt = 0L
 
         
         if (camera?.cameraInfo != null && preview != null && surfaceProducer != null && !isPaused) {
@@ -677,6 +700,107 @@ class MobileScanner(
                 TorchState.ON -> it.cameraControl.enableTorch(false)
             }
         }
+    }
+
+    /**
+     * Turns the flash light on or off.
+     *
+     * Unlike [toggleTorch] this sets an absolute state, so repeated calls are
+     * idempotent.
+     */
+    fun setTorchMode(enabled: Boolean) {
+        camera?.let {
+            if (!it.cameraInfo.hasFlashUnit()) {
+                return@let
+            }
+
+            it.cameraControl.enableTorch(enabled)
+        }
+    }
+
+    /**
+     * Measures the brightness of the current frame and reports it.
+     *
+     * The measurement is throttled to [SCENE_LUMINANCE_INTERVAL_MS] and reads
+     * only about [SCENE_LUMINANCE_SAMPLES] pixels of the luma plane, which the
+     * analyzer already holds in memory, so it adds no image conversion and no
+     * camera stream of its own.
+     */
+    private fun measureSceneLuminance(imageProxy: ImageProxy) {
+        val callback = sceneLuminanceCallback
+        if (!reportSceneLuminance || callback == null) {
+            return
+        }
+
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastSceneLuminanceAt < SCENE_LUMINANCE_INTERVAL_MS) {
+            return
+        }
+        lastSceneLuminanceAt = now
+
+        val width = imageProxy.width
+        val height = imageProxy.height
+        if (width <= 0 || height <= 0) {
+            return
+        }
+
+        try {
+            // Plane 0 of YUV_420_888 is luma, so brightness needs no conversion.
+            val plane = imageProxy.planes.firstOrNull() ?: return
+            val buffer = plane.buffer
+            val rowStride = plane.rowStride
+            val pixelStride = plane.pixelStride
+
+            // Step over the frame so that roughly SCENE_LUMINANCE_SAMPLES
+            // pixels are read, no matter what resolution the camera picked.
+            val step = max(1, sqrt(width.toDouble() * height / SCENE_LUMINANCE_SAMPLES).toInt())
+
+            val histogram = IntArray(256)
+            var total = 0L
+            var count = 0
+
+            var y = 0
+            while (y < height) {
+                val rowOffset = y * rowStride
+                var x = 0
+                while (x < width) {
+                    val index = rowOffset + x * pixelStride
+                    if (index >= buffer.limit()) {
+                        break
+                    }
+
+                    val luma = buffer.get(index).toInt() and 0xFF
+                    histogram[luma]++
+                    total += luma
+                    count++
+                    x += step
+                }
+                y += step
+            }
+
+            if (count == 0) {
+                return
+            }
+
+            callback(total.toDouble() / count / 255.0, percentile(histogram, count, 0.9) / 255.0)
+        } catch (_: Exception) {
+            // A frame that cannot be read is not worth reporting an error for.
+        }
+    }
+
+    /** Returns the [fraction] percentile of the given brightness [histogram]. */
+    private fun percentile(histogram: IntArray, count: Int, fraction: Double): Double {
+        val target = ceil(count * fraction).toInt()
+        var seen = 0
+
+        for (luma in histogram.indices) {
+            seen += histogram[luma]
+            if (seen >= target) {
+                return luma.toDouble()
+            }
+        }
+
+        return (histogram.size - 1).toDouble()
     }
 
     /**

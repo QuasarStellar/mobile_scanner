@@ -20,6 +20,8 @@ class MobileScannerErrorCodes {
         const val INVALID_ZOOM_SCALE_ERROR_MESSAGE = "The zoom scale should be between 0 and 1 (both inclusive)"
         const val NO_CAMERA_ERROR = "MOBILE_SCANNER_NO_CAMERA_ERROR"
         const val NO_CAMERA_ERROR_MESSAGE = "No cameras available."
+        const val SET_TORCH_MODE_ERROR = "MOBILE_SCANNER_SET_TORCH_MODE_ERROR"
+        const val SET_TORCH_MODE_ERROR_MESSAGE = "Only the on and off torch modes can be set."
         const val SET_SCALE_WHEN_STOPPED_ERROR = "MOBILE_SCANNER_SET_SCALE_WHEN_STOPPED_ERROR"
         const val SET_SCALE_WHEN_STOPPED_ERROR_MESSAGE = "The zoom scale cannot be changed when the camera is stopped."
         const val UNSUPPORTED_OPERATION_ERROR = "MOBILE_SCANNER_UNSUPPORTED_OPERATION" // Reserved for future use.

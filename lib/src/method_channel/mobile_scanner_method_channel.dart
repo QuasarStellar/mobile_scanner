@@ -16,6 +16,7 @@ import 'package:mobile_scanner/src/mobile_scanner_platform_interface.dart';
 import 'package:mobile_scanner/src/mobile_scanner_view_attributes.dart';
 import 'package:mobile_scanner/src/objects/barcode.dart';
 import 'package:mobile_scanner/src/objects/barcode_capture.dart';
+import 'package:mobile_scanner/src/objects/scene_luminance.dart';
 import 'package:mobile_scanner/src/objects/start_options.dart';
 import 'package:mobile_scanner/src/utils/parse_device_orientation_extension.dart';
 
@@ -42,6 +43,10 @@ class MethodChannelMobileScanner extends MobileScannerPlatform {
   /// The name of the zoom scale state event.
   @visibleForTesting
   static const String kZoomScaleStateEventName = 'zoomScaleState';
+
+  /// The name of the scene luminance event.
+  @visibleForTesting
+  static const String kSceneLuminanceEventName = 'sceneLuminance';
 
   /// The name of the method that gets the camera authorization state.
   @visibleForTesting
@@ -82,6 +87,10 @@ class MethodChannelMobileScanner extends MobileScannerPlatform {
   /// The name of the method that toggles the torch.
   @visibleForTesting
   static const String kToggleTorchMethodName = 'toggleTorch';
+
+  /// The name of the method that sets the torch to an absolute state.
+  @visibleForTesting
+  static const String kSetTorchModeMethodName = 'setTorchMode';
 
   /// The name of the method that updates the scan window.
   @visibleForTesting
@@ -264,6 +273,17 @@ class MethodChannelMobileScanner extends MobileScannerPlatform {
     return eventsStream
         .where((event) => event['name'] == kZoomScaleStateEventName)
         .map((event) => event['data'] as double? ?? 0.0);
+  }
+
+  @override
+  Stream<SceneLuminance> get sceneLuminanceStream {
+    return eventsStream
+        .where((event) => event['name'] == kSceneLuminanceEventName)
+        .map(
+          (event) => SceneLuminance.fromMap(
+            event['data'] as Map<Object?, Object?>? ?? const {},
+          ),
+        );
   }
 
   @override
@@ -497,6 +517,14 @@ class MethodChannelMobileScanner extends MobileScannerPlatform {
   @override
   Future<void> toggleTorch() async {
     await methodChannel.invokeMethod<void>(kToggleTorchMethodName);
+  }
+
+  @override
+  Future<void> setTorchMode(TorchState torchState) async {
+    await methodChannel.invokeMethod<void>(
+      kSetTorchModeMethodName,
+      torchState.rawValue,
+    );
   }
 
   @override
