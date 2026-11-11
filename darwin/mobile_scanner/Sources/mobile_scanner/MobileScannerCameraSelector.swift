@@ -106,8 +106,13 @@ class MobileScannerCameraSelector {
         }
 #endif
 
+#if os(iOS)
+        // Do not substitute a camera on the other side for the requested position.
+        return nil
+#else
         // Ultimate fallback: any available video device
         return AVCaptureDevice.default(for: .video)
+#endif
     }
 
     /// Get the list of supported lens types on this device.
