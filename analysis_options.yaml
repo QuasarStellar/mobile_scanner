@@ -9,3 +9,8 @@ analyzer:
     - android/**
     - ios/**
     - macos/**
+
+formatter:
+  page_width: 80
+  # very_good_analysis 11 switched this to automate.
+  trailing_commas: preserve
