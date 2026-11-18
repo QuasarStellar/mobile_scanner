@@ -98,6 +98,7 @@ class MobileScanner(
     private var detectionTimeout: Long = 250
     private var returnImage = false
     private var isPaused = false
+    private var sessionGeneration: Long = 0L
     private var reportSceneLuminance = false
     private var sceneLuminanceCallback: SceneLuminanceCallback? = null
     private var lastSceneLuminanceAt = 0L
@@ -481,15 +482,28 @@ class MobileScanner(
             return
         }
 
+        val startGeneration = ++sessionGeneration
         isPaused = false
 
         lastScanned = null
-        scanner = barcodeScannerFactory(barcodeScannerOptions)
+        val createdScanner = barcodeScannerFactory(barcodeScannerOptions)
+        scanner?.close()
+        scanner = createdScanner
 
         val cameraProviderFuture = ProcessCameraProvider.getInstance(activity)
         val mainExecutor = ContextCompat.getMainExecutor(activity)
 
         cameraProviderFuture.addListener({
+            if (startGeneration != sessionGeneration) {
+                if (scanner === createdScanner) {
+                    createdScanner.close()
+                    scanner = null
+                }
+                mobileScannerErrorCallback(CameraError())
+
+                return@addListener
+            }
+
             try {
                 cameraProvider = cameraProviderFuture.get()
             } catch (e: Exception) {
@@ -640,6 +654,7 @@ class MobileScanner(
      * Pause barcode scanning.
      */
     fun pause(force: Boolean = false) {
+        sessionGeneration++
         if (!force) {
             if (isPaused) {
                 throw AlreadyPaused()
@@ -656,6 +671,7 @@ class MobileScanner(
      * Stop barcode scanning.
      */
     fun stop(force: Boolean = false) {
+        sessionGeneration++
         if (!force) {
             if (!isPaused && isStopped()) {
                 throw AlreadyStopped()
@@ -697,7 +713,10 @@ class MobileScanner(
         // Unbind the camera use cases, the preview is a use case.
         // The camera will be closed when the last use case is unbound.
         cameraProvider?.unbindAll()
+        camera = null
+        preview = null
         imageAnalysis = null
+        isPaused = false
 
         // Release the surface for the preview.
         surfaceProducer?.release()
@@ -796,7 +815,16 @@ class MobileScanner(
                 return@let
             }
 
-            it.cameraControl.enableTorch(enabled)
+            val wasAuto = autoTorch != null
+            stopAutoTorch()
+
+            val future = it.cameraControl.enableTorch(enabled)
+
+            if (wasAuto) {
+                future.addListener({
+                    torchStateCallback?.invoke(it.cameraInfo.torchState.value ?: TorchState.OFF)
+                }, ContextCompat.getMainExecutor(activity))
+            }
         }
     }
 
@@ -960,6 +988,7 @@ class MobileScanner(
      * Dispose of this scanner instance.
      */
     fun dispose() {
+        sessionGeneration++
         if (isStopped()) {
             return
         }
