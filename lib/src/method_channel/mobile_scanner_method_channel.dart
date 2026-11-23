@@ -261,9 +261,16 @@ class MethodChannelMobileScanner extends MobileScannerPlatform {
         .handleError(_parseBarcodeError);
   }
 
+  /// The native side reports barcode errors as error events on the shared
+  /// [eventChannel]. Those belong to [barcodesStream], so the torch, zoom, and
+  /// scene luminance streams drop them. Otherwise a listener without `onError`
+  /// turns every barcode error into an uncaught error.
+  void _ignoreError(Object _) {}
+
   @override
   Stream<TorchState> get torchStateStream {
     return eventsStream
+        .handleError(_ignoreError)
         .where((event) => event['name'] == kTorchStateEventName)
         .map((event) => TorchState.fromRawValue(event['data'] as int? ?? 0));
   }
@@ -271,6 +278,7 @@ class MethodChannelMobileScanner extends MobileScannerPlatform {
   @override
   Stream<double> get zoomScaleStateStream {
     return eventsStream
+        .handleError(_ignoreError)
         .where((event) => event['name'] == kZoomScaleStateEventName)
         .map((event) => event['data'] as double? ?? 0.0);
   }
@@ -278,6 +286,7 @@ class MethodChannelMobileScanner extends MobileScannerPlatform {
   @override
   Stream<SceneLuminance> get sceneLuminanceStream {
     return eventsStream
+        .handleError(_ignoreError)
         .where((event) => event['name'] == kSceneLuminanceEventName)
         .map(
           (event) => SceneLuminance.fromMap(
