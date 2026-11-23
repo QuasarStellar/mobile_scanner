@@ -1,0 +1,69 @@
+name: Devolution Fork Release
+
+on:
+  push:
+    branches:
+      - devolution/main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: devolution-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'QuasarStellar/mobile_scanner'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute and apply devolution fork version and tag
+        id: release
+        run: bash .github/scripts/devolution-release.sh --apply
+
+      - name: Push release commit and tag
+        if: steps.release.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          COMMITTED: ${{ steps.release.outputs.committed }}
+        run: |
+          if [[ "$COMMITTED" == "true" ]]; then
+            if git push origin HEAD:devolution/main; then
+              git push origin "refs/tags/${TAG}"
+            else
+              echo "[WARNING] Direct push to devolution/main blocked; opening release PR instead."
+              git tag -d "$TAG"
+              RELEASE_BRANCH="chore/devolution-release-${TAG}"
+              git push origin "HEAD:refs/heads/${RELEASE_BRANCH}" --force
+              gh pr create \
+                --base devolution/main \
+                --head "$RELEASE_BRANCH" \
+                --title "chore(devolution): release ${VERSION}" \
+                --body "Automated version bump for devolution fork release \`${VERSION}\` (\`${TAG}\`). Once merged, this workflow will create the tag and GitHub release automatically." \
+                || echo "[INFO] Release PR already exists"
+              exit 0
+            fi
+          else
+            git push origin "refs/tags/${TAG}"
+          fi
+
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            || echo "[INFO] Release ${TAG} already exists"
