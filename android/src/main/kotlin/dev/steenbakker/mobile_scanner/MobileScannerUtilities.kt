@@ -26,6 +26,10 @@ fun Image.toByteArray(): ByteArray {
     return out.toByteArray()
 }
 
+/** False for a barcode that ML Kit only located: it has a position, but no content. */
+internal val Barcode.isDecoded: Boolean
+    get() = !rawValue.isNullOrEmpty() || rawBytes?.isNotEmpty() == true
+
 val Barcode.data: Map<String, Any?>
     get() = mapOf(
         "calendarEvent" to calendarEvent?.data,

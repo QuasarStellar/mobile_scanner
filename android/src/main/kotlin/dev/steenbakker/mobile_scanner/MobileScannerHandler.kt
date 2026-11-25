@@ -297,12 +297,32 @@ class MobileScannerHandler(
 
         val formats: List<Int>? = call.argument<List<Int>>("formats")
         val filePath: String = call.argument<String>("filePath")!!
+        // ML Kit can report where a QR code is in a still image without being able to decode it.
+        // The scanner then retries on that part of the image, which only makes sense for QR codes.
+        val retryUndecodedQrCodes = allowsQrCodes(formats)
 
         mobileScanner!!.analyzeImage(
             Uri.fromFile(File(filePath)),
-            buildBarcodeScannerOptions(formats, false),
+            buildBarcodeScannerOptions(formats, false, retryUndecodedQrCodes),
+            if (retryUndecodedQrCodes) {
+                buildBarcodeScannerOptions(listOf(BarcodeFormats.QR_CODE.intValue), false)
+            } else {
+                null
+            },
             analyzeImageSuccessCallback,
             analyzeImageErrorCallback)
+    }
+
+    private fun allowsQrCodes(formats: List<Int>?): Boolean {
+        if (formats == null) {
+            return true
+        }
+
+        return formats.any { formatValue ->
+            val format = BarcodeFormats.fromRawValue(formatValue)
+
+            format == BarcodeFormats.ALL_FORMATS || format == BarcodeFormats.QR_CODE
+        }
     }
 
     private fun toggleTorch(result: MethodChannel.Result) {
@@ -406,7 +426,11 @@ class MobileScannerHandler(
         result.success(null)
     }
 
-    private fun buildBarcodeScannerOptions(formats: List<Int>?, autoZoom: Boolean): BarcodeScannerOptions? {
+    private fun buildBarcodeScannerOptions(
+        formats: List<Int>?,
+        autoZoom: Boolean,
+        allPotentialBarcodes: Boolean = false,
+    ): BarcodeScannerOptions? {
         val builder : BarcodeScannerOptions.Builder?
         if (formats == null) {
             builder = BarcodeScannerOptions.Builder()
@@ -433,6 +457,10 @@ class MobileScannerHandler(
                     setZoomRatio(it)
                 }.setMaxSupportedZoomRatio(getMaxZoomRatio())
                     .build())
+        }
+
+        if (allPotentialBarcodes) {
+            builder.enableAllPotentialBarcodes()
         }
 
         return builder.build()

@@ -45,7 +45,10 @@ import com.google.mlkit.vision.common.InputImage
 import dev.steenbakker.mobile_scanner.objects.DetectionSpeed
 import dev.steenbakker.mobile_scanner.objects.MobileScannerErrorCodes
 import dev.steenbakker.mobile_scanner.objects.MobileScannerStartParameters
+import dev.steenbakker.mobile_scanner.utils.barcodeInSourceCoordinates
+import dev.steenbakker.mobile_scanner.utils.guidedRetryCrop
 import dev.steenbakker.mobile_scanner.utils.invertBitmapColors
+import dev.steenbakker.mobile_scanner.utils.renderGuidedRetryCrop
 import dev.steenbakker.mobile_scanner.utils.rotateBitmap
 import dev.steenbakker.mobile_scanner.utils.serialize
 import io.flutter.view.TextureRegistry
@@ -69,6 +72,8 @@ class MobileScanner(
     private val deviceOrientationListener: DeviceOrientationListener,
     private val barcodeScannerFactory: (options: BarcodeScannerOptions?) -> BarcodeScanner = ::defaultBarcodeScannerFactory,
     @VisibleForTesting internal val inputImageFactory: (image: Image, rotationDegrees: Int) -> InputImage = InputImage::fromMediaImage,
+    @VisibleForTesting internal val fileInputImageFactory: (context: Context, image: Uri) -> InputImage = InputImage::fromFilePath,
+    @VisibleForTesting internal val bitmapInputImageFactory: (bitmap: Bitmap, rotationDegrees: Int) -> InputImage = InputImage::fromBitmap,
 ) {
 
     init {
@@ -915,16 +920,21 @@ class MobileScanner(
 
     /**
      * Analyze a single image.
+     *
+     * When [undecodedBarcodeRetryOptions] is given, [scannerOptions] must enable all potential
+     * barcodes. A barcode that ML Kit locates without decoding it is then retried
+     * with [undecodedBarcodeRetryOptions] on a smoothed, scaled down crop of the image.
      */
     fun analyzeImage(
         image: Uri,
         scannerOptions: BarcodeScannerOptions?,
+        undecodedBarcodeRetryOptions: BarcodeScannerOptions?,
         onSuccess: AnalyzerSuccessCallback,
         onError: AnalyzerErrorCallback) {
         val inputImage: InputImage
 
         try {
-            inputImage = InputImage.fromFilePath(activity, image)
+            inputImage = fileInputImageFactory(activity, image)
         } catch (_: IOException) {
             onError(MobileScannerErrorCodes.ANALYZE_IMAGE_NO_VALID_IMAGE_ERROR_MESSAGE)
 
@@ -935,13 +945,98 @@ class MobileScanner(
         val barcodeScanner: BarcodeScanner = barcodeScannerFactory(scannerOptions)
 
         barcodeScanner.process(inputImage).addOnSuccessListener { barcodes ->
-            val barcodeMap = barcodes.map { barcode -> barcode.data }
+            if (undecodedBarcodeRetryOptions == null) {
+                onSuccess(barcodes.map { barcode -> barcode.data })
 
-            onSuccess(barcodeMap)
+                return@addOnSuccessListener
+            }
+
+            // With potential barcodes enabled, the result also lists barcodes that were only located.
+            val decodedBarcodes = barcodes.filter { barcode -> barcode.isDecoded }
+            val undecodedBox = if (decodedBarcodes.isEmpty()) {
+                barcodes.mapNotNull { barcode -> barcode.boundingBox }
+                    .maxByOrNull { box -> box.width().toLong() * box.height() }
+            } else {
+                null
+            }
+
+            if (undecodedBox == null) {
+                onSuccess(decodedBarcodes.map { barcode -> barcode.data })
+            } else {
+                retryUndecodedBarcode(inputImage, undecodedBox, undecodedBarcodeRetryOptions, onSuccess)
+            }
         }.addOnFailureListener { e ->
             onError(e.localizedMessage ?: e.toString())
         }.addOnCompleteListener {
             barcodeScanner.close()
+        }
+    }
+
+    /**
+     * Retries a barcode that ML Kit located at [box] in [inputImage] without decoding it,
+     * on a smaller, smoothed crop around the box.
+     *
+     * A retry that cannot run or finds nothing reports no barcodes, like the first pass did.
+     */
+    private fun retryUndecodedBarcode(
+        inputImage: InputImage,
+        box: Rect,
+        scannerOptions: BarcodeScannerOptions,
+        onSuccess: AnalyzerSuccessCallback,
+    ) {
+        val source = inputImage.bitmapInternal
+        // The box is in upright image coordinates, which are those of the bitmap only without rotation.
+        val crop = if (source == null || inputImage.rotationDegrees != 0) {
+            null
+        } else {
+            guidedRetryCrop(box.left, box.top, box.right, box.bottom, source.width, source.height)
+        }
+
+        if (source == null || crop == null) {
+            onSuccess(emptyList())
+
+            return
+        }
+
+        val barcodeScanner: BarcodeScanner = barcodeScannerFactory(scannerOptions)
+        val mainHandler = Handler(Looper.getMainLooper())
+
+        fun finish(barcodes: List<Map<String, Any?>>) {
+            barcodeScanner.close()
+            onSuccess(barcodes)
+        }
+
+        // Scale and blur the crop off the main thread.
+        CoroutineScope(Dispatchers.Default).launch {
+            val bitmap = try {
+                renderGuidedRetryCrop(source, crop)
+            } catch (_: Exception) {
+                null
+            } catch (_: OutOfMemoryError) {
+                null
+            }
+
+            if (bitmap == null) {
+                mainHandler.post { finish(emptyList()) }
+
+                return@launch
+            }
+
+            try {
+                barcodeScanner.process(bitmapInputImageFactory(bitmap, 0)).addOnSuccessListener { barcodes ->
+                    finish(
+                        barcodes.filter { barcode -> barcode.isDecoded }
+                            .map { barcode -> barcodeInSourceCoordinates(barcode.data, crop) },
+                    )
+                }.addOnFailureListener {
+                    finish(emptyList())
+                }.addOnCompleteListener {
+                    bitmap.recycle()
+                }
+            } catch (_: Exception) {
+                bitmap.recycle()
+                mainHandler.post { finish(emptyList()) }
+            }
         }
     }
 
